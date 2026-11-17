@@ -1,15 +1,4 @@
--- BRAINROT BAY -- HUD (client LocalScript).
--- The whole ScreenGui is built here in code, over the real 3D world: a top
--- bar (cash, income per second, rebirths, wave countdown), a shop panel
--- listing the brainrots walking the conveyor, an inventory panel with a
--- sell button per brainrot, action buttons (eggs, lock, rebirth), a
--- leaderboard, a steal warning banner, and a notice line.
--- The HUD is kept clear of the top-left corner, where Roblox's own menu
--- buttons sit over the play view.
---
--- Movement keys are NOT handled here with InputBegan: the arrow keys are
--- claimed by Roblox's default camera scripts, so this HUD reads keys with
--- ContextActionService (see Dash.client.luau) and IsKeyDown instead.
+-- BRAINROT BAY -- HUD (client LocalScript): the whole ScreenGui, built in code.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -22,9 +11,7 @@ local remotes = ReplicatedStorage:WaitForChild("BrainrotBayRemotes")
 local serverEvent = remotes:WaitForChild("ServerEvent")
 local clientEvent = remotes:WaitForChild("ClientEvent")
 
--- ---------------------------------------------------------------------------
 -- Gui skeleton
--- ---------------------------------------------------------------------------
 local gui = Instance.new("ScreenGui")
 gui.Name = "BrainrotBayHud"
 gui.ResetOnSpawn = false
@@ -61,7 +48,7 @@ local function makeButton(parent, name, position, size, text, color)
 	return button
 end
 
--- Top bar, pushed right so it never collides with Roblox's menu buttons.
+-- Top bar, pushed right of Roblox's menu buttons.
 local topBar = Instance.new("Frame")
 topBar.Name = "TopBar"
 topBar.AnchorPoint = Vector2.new(1, 0)
@@ -75,25 +62,20 @@ local cashLabel = makeLabel(topBar, "Cash", UDim2.new(0, 8, 0, 6), UDim2.new(0, 
 local incomeLabel = makeLabel(topBar, "Income", UDim2.new(0, 186, 0, 6), UDim2.new(0, 150, 0, 32), "+$0/s", 18, Color3.fromRGB(255, 220, 100))
 local rebirthLabel = makeLabel(topBar, "Rebirths", UDim2.new(0, 344, 0, 6), UDim2.new(0, 90, 0, 32), "Rebirth x0", 16)
 local waveLabel = makeLabel(topBar, "Wave", UDim2.new(0, 442, 0, 6), UDim2.new(0, 110, 0, 32), "Wave: 180s", 16, Color3.fromRGB(120, 200, 255))
--- The lighthouse beam's heading: which way the next wave comes from.
--- The server sends it with every WaveCountdown; 0 is north, 270 is west.
+-- Beam heading: 0 north, 270 west (sent with WaveCountdown).
 local beamLabel = makeLabel(topBar, "Beam", UDim2.new(0, 560, 0, 6), UDim2.new(0, 150, 0, 32), "Beam: ▲ NORTH", 16, Color3.fromRGB(255, 240, 150))
 
--- Title, centred, small, so it never fights the menu corner.
 local title = makeLabel(gui, "Title", UDim2.new(0.5, -140, 0, 10), UDim2.new(0, 280, 0, 36), "BRAINROT BAY", 26, Color3.fromRGB(255, 220, 100))
 title.BackgroundTransparency = 0.5
+makeLabel(gui, "DashHint", UDim2.new(0.5, -140, 0, 52), UDim2.new(0, 280, 0, 24), "Q / SHIFT - DASH home (5s cooldown)", 14, Color3.fromRGB(200, 220, 255))
 
--- Notice line, bottom centre: every server message lands here.
 local notice = makeLabel(gui, "Notice", UDim2.new(0.5, -300, 1, -56), UDim2.new(0, 600, 0, 36), "Welcome to BRAINROT BAY!", 18)
 notice.BackgroundTransparency = 0.4
 
--- Steal warning banner, centre screen, hidden until a bot channels a steal.
 local warning = makeLabel(gui, "StealWarning", UDim2.new(0.5, -220, 0, 120), UDim2.new(0, 440, 0, 52), "", 20, Color3.fromRGB(255, 90, 90))
 warning.Visible = false
 
--- ---------------------------------------------------------------------------
--- Shop panel (left): one row per brainrot on the conveyor, click to buy.
--- ---------------------------------------------------------------------------
+-- Shop panel (left): one row per brainrot, click to buy.
 local shopFrame = Instance.new("Frame")
 shopFrame.Name = "Shop"
 shopFrame.Position = UDim2.new(0, 10, 0, 64)
@@ -140,7 +122,6 @@ local function renderShop(entries)
 			entry.price
 		)
 		row.Parent = shopList
-		-- Rarity stripe on the left edge of the row.
 		local stripe = Instance.new("Frame")
 		stripe.Size = UDim2.new(0, 6, 1, 0)
 		stripe.BackgroundColor3 = rarityColor(entry.rarity)
@@ -155,9 +136,7 @@ local function renderShop(entries)
 	end
 end
 
--- ---------------------------------------------------------------------------
--- Inventory panel (right): your brainrots, each with a sell button.
--- ---------------------------------------------------------------------------
+-- Inventory panel (right): your brainrots, each with SELL.
 local invFrame = Instance.new("Frame")
 invFrame.Name = "Inventory"
 invFrame.AnchorPoint = Vector2.new(1, 0)
@@ -204,9 +183,7 @@ local function renderInventory(owned)
 	end
 end
 
--- ---------------------------------------------------------------------------
 -- Action buttons (bottom left): eggs, lock, rebirth.
--- ---------------------------------------------------------------------------
 local actions = Instance.new("Frame")
 actions.Name = "Actions"
 actions.Position = UDim2.new(0, 10, 1, -150)
@@ -227,9 +204,7 @@ eggGolden.MouseButton1Click:Connect(function() serverEvent:FireServer("BuyEgg", 
 lockBtn.MouseButton1Click:Connect(function() serverEvent:FireServer("Lock") end)
 rebirthBtn.MouseButton1Click:Connect(function() serverEvent:FireServer("Rebirth") end)
 
--- ---------------------------------------------------------------------------
--- Leaderboard (bottom right) + rarity index (bottom centre-left).
--- ---------------------------------------------------------------------------
+-- Leaderboard (bottom right) + rarity index.
 local boardFrame = Instance.new("Frame")
 boardFrame.Name = "Leaderboard"
 boardFrame.AnchorPoint = Vector2.new(1, 0)
@@ -265,7 +240,6 @@ local function renderLeaderboard(rows)
 	end
 end
 
--- Rarity index: the ladder, so a new player sees the climb at a glance.
 local indexFrame = Instance.new("Frame")
 indexFrame.Name = "RarityIndex"
 indexFrame.Position = UDim2.new(0, 10, 0, 394)
@@ -277,9 +251,7 @@ makeLabel(indexFrame, "IndexTitle", UDim2.new(0, 8, 0, 6), UDim2.new(0, 284, 0, 
 local indexText = "Common $2-4/s  >  Uncommon $8-14/s\nRare $25-40/s  >  Epic $70-110/s\nLegendary $180-260/s  >  Mythic $450-700/s\nMutations: Golden x2 - Diamond x4 - Rainbow x8\nRebirth: +50% income each, up to 10x"
 makeLabel(indexFrame, "IndexBody", UDim2.new(0, 8, 0, 36), UDim2.new(0, 284, 0, 88), indexText, 13)
 
--- ---------------------------------------------------------------------------
 -- Server messages
--- ---------------------------------------------------------------------------
 clientEvent.OnClientEvent:Connect(function(action: string, payload)
 	if action == "State" then
 		cashLabel.Text = "Cash: $" .. tostring(payload.cash)
@@ -309,8 +281,6 @@ clientEvent.OnClientEvent:Connect(function(action: string, payload)
 		else
 			waveLabel.TextColor3 = Color3.fromRGB(120, 200, 255)
 		end
-		-- The lighthouse beam points at the next wave's approach: read
-		-- the heading the server picked and show it as an arrow.
 		local headings = { [0] = "▲ NORTH", [90] = "► EAST", [180] = "▼ SOUTH", [270] = "◄ WEST" }
 		beamLabel.Text = "Beam: " .. (headings[payload.beamAngle or 0] or "▲ NORTH")
 	elseif action == "Leaderboard" then
@@ -318,7 +288,6 @@ clientEvent.OnClientEvent:Connect(function(action: string, payload)
 	end
 end)
 
--- Ask for the first state as soon as the client is ready.
 serverEvent:FireServer("RequestState")
 
 print("BRAINROT BAY HUD ready.")
