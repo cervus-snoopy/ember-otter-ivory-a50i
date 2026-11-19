@@ -1,58 +1,28 @@
--- BRAINROT BAY -- Main server script.
--- The single source of truth for the game state. It owns:
---   * one plot per player (8 plots, first come first served)
---   * the conveyor shop (BrainrotSpawner rolls, this script sells)
---   * the earnings tick (every second, every owned brainrot pays)
---   * eggs, selling, plot locks and rebirths
---   * player stealing (proximity-checked) and the rival-bot threat
---   * the wave event (WaveManager sweeps, this script catches players)
---   * the leaderboard broadcast
--- All client talk goes through two remotes in ReplicatedStorage:
---   ServerEvent (client -> server, action + arguments) and
---   ClientEvent (server -> client, action + payload).
--- No DataStore, no persistence: the demo loop is session-based, so a fresh
--- join starts at START_CASH with an empty plot.
-
+-- LIGHTHOUSE BAY
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-
 local Characters = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Characters)
 local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Config)
 local Spawner = require(script.Parent.BrainrotSpawner)
 local RivalBotAI = require(script.Parent.RivalBotAI)
 local WaveManager = require(script.Parent.WaveManager)
-
 local rng = Random.new()
-
--- ---------------------------------------------------------------------------
--- Remotes
--- ---------------------------------------------------------------------------
 local remotes = Instance.new("Folder")
 remotes.Name = "BrainrotBayRemotes"
 remotes.Parent = ReplicatedStorage
-
 local serverEvent = Instance.new("RemoteEvent")
 serverEvent.Name = "ServerEvent"
 serverEvent.Parent = remotes
-
 local clientEvent = Instance.new("RemoteEvent")
 clientEvent.Name = "ClientEvent"
 clientEvent.Parent = remotes
-
 local function send(player: Player, action: string, payload)
 	clientEvent:FireClient(player, action, payload)
 end
-
 local function broadcast(action: string, payload)
 	clientEvent:FireAllClients(action, payload)
 end
-
--- ---------------------------------------------------------------------------
--- Plots: 8 plots, two rows of four. Centres match the static world in
--- default.project.json, so the fences and pads the player sees are the
--- plots the server owns.
--- ---------------------------------------------------------------------------
 local plots = {}
 do
 	local xs = { -51, -17, 17, 51 }
@@ -73,14 +43,13 @@ do
 			end
 			plots[index] = {
 				center = Vector3.new(x, 1, z),
-				owner = nil, -- Player or nil
+				owner = nil,
 				slots = slots,
 				lockedUntil = 0,
 			}
 		end
 	end
 end
-
 local function plotOf(player: Player)
 	for i, plot in ipairs(plots) do
 		if plot.owner == player then
@@ -89,7 +58,6 @@ local function plotOf(player: Player)
 	end
 	return nil, nil
 end
-
 local function firstFreeSlot(plot)
 	for i, slot in ipairs(plot.slots) do
 		if not slot.brainrot then
@@ -98,21 +66,17 @@ local function firstFreeSlot(plot)
 	end
 	return nil, nil
 end
-
--- ---------------------------------------------------------------------------
--- Player state (session only)
--- ---------------------------------------------------------------------------
-local state = {} -- [Player] = { cash, rebirths, totalEarned, stealCooldownUntil }
-
+local state = {}
 local function newState(player: Player)
 	state[player] = {
 		cash = Config.START_CASH,
 		rebirths = 0,
 		totalEarned = 0,
 		stealCooldownUntil = 0,
+		whackCooldownUntil = 0,
+		collected = {},
 	}
 end
-
 local function incomePerSecond(player: Player): number
 	local _, plot = plotOf(player)
 	if not plot then
@@ -126,7 +90,6 @@ local function incomePerSecond(player: Player): number
 	end
 	return total
 end
-
 local function ownedList(player: Player)
 	local _, plot = plotOf(player)
 	local out = {}
@@ -147,13 +110,21 @@ local function ownedList(player: Player)
 	end
 	return out
 end
-
 local function pushState(player: Player)
 	local s = state[player]
 	if not s then
 		return
 	end
-	local plotIndex = plotOf(player)
+	local plotIndex, plot = plotOf(player)
+	local lockSecondsLeft = 0
+	if plot then
+		lockSecondsLeft = math.max(0, math.ceil(plot.lockedUntil - os.clock()))
+	end
+	local collected = {}
+	for name in pairs(s.collected) do
+		table.insert(collected, name)
+	end
+	table.sort(collected)
 	send(player, "State", {
 		cash = s.cash,
 		rebirths = s.rebirths,
@@ -162,19 +133,15 @@ local function pushState(player: Player)
 		plot = plotIndex,
 		owned = ownedList(player),
 		waveIn = WaveManager.secondsUntilWave(),
+		lockSecondsLeft = lockSecondsLeft,
+		collected = collected,
 	})
 end
-
--- ---------------------------------------------------------------------------
--- The conveyor shop
--- ---------------------------------------------------------------------------
-local shop = {} -- list of entries, each with .model in Workspace.Conveyor
+local shop = {}
 local shopFolder = Instance.new("Folder")
 shopFolder.Name = "Conveyor"
 shopFolder.Parent = Workspace
-
 local shopCounter = 0
-
 local function spawnShopBrainrot()
 	shopCounter += 1
 	local entry = Spawner.rollEntry("shop-" .. tostring(shopCounter))
@@ -189,12 +156,10 @@ local function spawnShopBrainrot()
 	entry.model = model
 	table.insert(shop, entry)
 	Spawner.walkToWindow(model, function()
-		-- The window timer starts when it arrives at the shop end.
 		entry.arrivedAt = os.clock()
 	end)
 	broadcast("Shop", shopPublic())
 end
-
 function shopPublic()
 	local out = {}
 	for _, entry in ipairs(shop) do
@@ -210,9 +175,6 @@ function shopPublic()
 	end
 	return out
 end
-
--- Prune shop entries whose window expired: the model wanders off (is
--- destroyed) and the listing disappears from every HUD.
 task.spawn(function()
 	while true do
 		task.wait(2)
@@ -229,8 +191,6 @@ task.spawn(function()
 		end
 	end
 end)
-
--- Spawn loop: a fresh brainrot rolls onto the dock every few seconds.
 task.spawn(function()
 	while true do
 		task.wait(Config.SPAWN_INTERVAL)
@@ -239,10 +199,6 @@ task.spawn(function()
 		end
 	end
 end)
-
--- ---------------------------------------------------------------------------
--- Buying, selling, eggs, locks, rebirths
--- ---------------------------------------------------------------------------
 local function placeOnPlot(player: Player, brainrot): boolean
 	local _, plot = plotOf(player)
 	if not plot then
@@ -253,12 +209,15 @@ local function placeOnPlot(player: Player, brainrot): boolean
 		return false
 	end
 	slot.brainrot = brainrot
+	local s = state[player]
+	if s then
+		s.collected[brainrot.name] = true
+	end
 	local castEntry = Characters.byName(brainrot.name)
 	slot.model = Spawner.buildModel(castEntry, brainrot.mutation, brainrot.id, slot.position)
 	slot.model.Parent = Workspace
 	return true
 end
-
 local function buyBrainrot(player: Player, shopId: string)
 	local s = state[player]
 	if not s then
@@ -294,7 +253,7 @@ local function buyBrainrot(player: Player, shopId: string)
 				price = entry.price,
 			}
 			placeOnPlot(player, brainrot)
-			send(player, "Notice", "You bought " .. entry.name .. " (" .. entry.rarity .. ")!")
+			send(player, "Notice", "You bought " .. entry.name .. " (" .. entry.rarity .. ")! " .. entry.joke)
 			broadcast("Shop", shopPublic())
 			pushState(player)
 			return
@@ -302,7 +261,6 @@ local function buyBrainrot(player: Player, shopId: string)
 	end
 	send(player, "Notice", "That brainrot already wandered off.")
 end
-
 local function sellBrainrot(player: Player, slotIndex: number)
 	local s = state[player]
 	local _, plot = plotOf(player)
@@ -323,7 +281,6 @@ local function sellBrainrot(player: Player, slotIndex: number)
 	slot.brainrot = nil
 	pushState(player)
 end
-
 local function buyEgg(player: Player, tier: string)
 	local s = state[player]
 	local price = Config.EGG_PRICES[tier]
@@ -353,13 +310,12 @@ local function buyEgg(player: Player, tier: string)
 		price = castEntry.price,
 	}
 	placeOnPlot(player, brainrot)
-	send(player, "Notice", "Your " .. tier .. " egg hatched " .. brainrot.name .. " (" .. brainrot.rarity .. ")!")
+	send(player, "Notice", "Your " .. tier .. " egg hatched " .. brainrot.name .. " (" .. brainrot.rarity .. ")! " .. castEntry.joke)
 	pushState(player)
 end
-
 local function lockPlot(player: Player)
 	local s = state[player]
-	local plotIndex, plot = plotOf(player)
+	local _, plot = plotOf(player)
 	if not s or not plot then
 		return
 	end
@@ -372,7 +328,6 @@ local function lockPlot(player: Player)
 	send(player, "Notice", "Plot locked for " .. tostring(Config.LOCK_DURATION) .. " seconds!")
 	pushState(player)
 end
-
 local function rebirth(player: Player)
 	local s = state[player]
 	local _, plot = plotOf(player)
@@ -401,12 +356,19 @@ local function rebirth(player: Player)
 	send(player, "Notice", "REBIRTH " .. tostring(s.rebirths) .. "! All income x" .. tostring(1 + s.rebirths * 0.5) .. " forever.")
 	pushState(player)
 end
-
--- ---------------------------------------------------------------------------
--- Stealing (player vs player plot, and stealing back from a rival bot)
--- ---------------------------------------------------------------------------
-local stolenByBot = {} -- [botName] = brainrot table
-
+local stolenByBot = {}
+local activeBotSteals = {}
+local whackedBots = {}
+local TAUNTS = {
+	["Sneaky Sal"] = "Sal pockets the rent. Chase him to the den!",
+	["Greedy Gus"] = "Gus laughs all the way to the den. Chase him!",
+	["Looty Lou"] = "Lou bows and bolts for the den. Chase Lou down!",
+}
+local FLEES = {
+	["Sneaky Sal"] = "Sal trips over his own shadow.",
+	["Greedy Gus"] = "Gus drops the loot and blames the lamp.",
+	["Looty Lou"] = "Lou curtsies and runs for the reef.",
+}
 local function characterNear(player: Player, position: Vector3, radius: number): boolean
 	local character = player.Character
 	if not character then
@@ -418,7 +380,6 @@ local function characterNear(player: Player, position: Vector3, radius: number):
 	end
 	return (root.Position - position).Magnitude <= radius
 end
-
 local function stealFromPlot(player: Player, targetPlotIndex: number, slotIndex: number)
 	local s = state[player]
 	if not s then
@@ -464,7 +425,6 @@ local function stealFromPlot(player: Player, targetPlotIndex: number, slotIndex:
 	pushState(player)
 	pushState(target.owner)
 end
-
 local function stealBackFromBot(player: Player, botName: string, botModel: Model)
 	local s = state[player]
 	local brainrot = stolenByBot[botName]
@@ -486,21 +446,69 @@ local function stealBackFromBot(player: Player, botName: string, botModel: Model
 	send(player, "Notice", "You stole back " .. brainrot.name .. " from " .. botName .. "!")
 	pushState(player)
 end
-
--- ---------------------------------------------------------------------------
--- Rival bots
--- ---------------------------------------------------------------------------
+local function whackBot(player: Player)
+	local s = state[player]
+	if not s then
+		return
+	end
+	if os.clock() < s.whackCooldownUntil then
+		send(player, "Notice", "Whack is on cooldown.")
+		return
+	end
+	local myPlotIndex = plotOf(player)
+	if not myPlotIndex then
+		return
+	end
+	local targetBot = nil
+	local targetSteal = nil
+	for botName, steal in pairs(activeBotSteals) do
+		if steal.plotIndex == myPlotIndex then
+			targetBot = botName
+			targetSteal = steal
+			break
+		end
+	end
+	if not targetBot or not targetSteal then
+		return
+	end
+	local bot = botModels[targetBot]
+	if not bot or not bot.PrimaryPart then
+		return
+	end
+	if not characterNear(player, bot.PrimaryPart.Position, Config.WHACK_RANGE) then
+		send(player, "Notice", "Get closer to whack " .. targetBot .. "!")
+		return
+	end
+	s.whackCooldownUntil = os.clock() + Config.WHACK_COOLDOWN_SECONDS
+	whackedBots[targetBot] = os.clock()
+	local plot = plots[targetSteal.plotIndex]
+	local slot = plot and plot.slots[targetSteal.slotIndex]
+	local brainrotName = slot and slot.brainrot and slot.brainrot.name or "your brainrot"
+	send(player, "Notice", "WHACK! " .. targetBot .. " dropped your " .. brainrotName .. " and fled! " .. (FLEES[targetBot] or ""))
+	send(player, "StealEnd", {})
+	local torso = bot:FindFirstChild("Torso")
+	local tagGui = torso and torso:FindFirstChild("NameTag")
+	local label = tagGui and tagGui:FindFirstChildOfClass("TextLabel")
+	if label then
+		local oldText = label.Text
+		label.Text = "WHACKED!"
+		task.delay(2, function()
+			if label.Parent then
+				label.Text = oldText
+			end
+		end)
+	end
+end
 local rivalFolder = Instance.new("Folder")
 rivalFolder.Name = "Rivals"
 rivalFolder.Parent = Workspace
-
 local rivalDen = Vector3.new(0, 2, 95)
 local botModels = {}
-
 local world = {
 	plots = plots,
 	rivalDen = rivalDen,
 	onStealStart = function(plotIndex: number, slotIndex: number, botName: string)
+		activeBotSteals[botName] = { plotIndex = plotIndex, slotIndex = slotIndex, startedAt = os.clock() }
 		local plot = plots[plotIndex]
 		if plot and plot.owner then
 			send(plot.owner, "StealWarning", {
@@ -511,6 +519,7 @@ local world = {
 		end
 	end,
 	onStealDone = function(plotIndex: number, slotIndex: number, botName: string)
+		activeBotSteals[botName] = nil
 		local plot = plots[plotIndex]
 		if not plot then
 			return
@@ -527,12 +536,19 @@ local world = {
 		slot.model = nil
 		slot.brainrot = nil
 		if plot.owner then
-			send(plot.owner, "Notice", botName .. " stole your " .. brainrot.name .. "! Chase them and steal it back!")
+			send(plot.owner, "Notice", botName .. " stole your " .. brainrot.name .. "! " .. (TAUNTS[botName] or "Chase them and steal it back!"))
 			pushState(plot.owner)
 		end
 	end,
+	onStealAbort = function(botName: string)
+		activeBotSteals[botName] = nil
+	end,
+	isChannelInterrupted = function(botName: string): boolean
+		local steal = activeBotSteals[botName]
+		local whackedAt = whackedBots[botName]
+		return steal ~= nil and whackedAt ~= nil and whackedAt >= steal.startedAt
+	end,
 }
-
 for i = 1, Config.RIVAL_COUNT do
 	local spawnPos = Vector3.new(-40 + (i - 1) * 40, 2, 95)
 	local bot = RivalBotAI.buildBot(i, spawnPos)
@@ -542,10 +558,6 @@ for i = 1, Config.RIVAL_COUNT do
 		RivalBotAI.runBot(bot, world)
 	end)
 end
-
--- ---------------------------------------------------------------------------
--- The wave
--- ---------------------------------------------------------------------------
 local waveWorld = {
 	onWaveStart = function()
 		broadcast("WaveWarning", { seconds = 0, phase = "start" })
@@ -554,10 +566,6 @@ local waveWorld = {
 		broadcast("WaveWarning", { seconds = 0, phase = "end" })
 	end,
 	onWavePass = function(coord: number, axis: string)
-		-- Anyone the wall is sweeping over, who is not safe at home, is
-		-- caught once: knocked back to spawn, loses 5% of their cash.
-		-- The wall moves along one axis per wave (see WaveManager); the
-		-- catch check reads the player's coordinate on that same axis.
 		for _, player in ipairs(Players:GetPlayers()) do
 			local character = player.Character
 			if character then
@@ -591,10 +599,6 @@ local waveWorld = {
 }
 WaveManager.buildWall(Workspace)
 WaveManager.startLoop(waveWorld)
-
--- Wave countdown broadcast, so every HUD counts down in sync. The beam
--- heading rides along, so the HUD can show which way the next wave comes
--- from without polling ReplicatedStorage.
 task.spawn(function()
 	while true do
 		task.wait(1)
@@ -605,10 +609,6 @@ task.spawn(function()
 		})
 	end
 end)
-
--- ---------------------------------------------------------------------------
--- Earnings tick + leaderboard
--- ---------------------------------------------------------------------------
 task.spawn(function()
 	while true do
 		task.wait(Config.TICK_SECONDS)
@@ -625,7 +625,6 @@ task.spawn(function()
 		end
 	end
 end)
-
 local function leaderboard()
 	local rows = {}
 	for _, player in ipairs(Players:GetPlayers()) do
@@ -639,17 +638,12 @@ local function leaderboard()
 	end)
 	return rows
 end
-
 task.spawn(function()
 	while true do
 		task.wait(5)
 		broadcast("Leaderboard", leaderboard())
 	end
 end)
-
--- ---------------------------------------------------------------------------
--- Client requests
--- ---------------------------------------------------------------------------
 serverEvent.OnServerEvent:Connect(function(player: Player, action: string, arg1, arg2)
 	if action == "Buy" then
 		buyBrainrot(player, arg1)
@@ -668,19 +662,16 @@ serverEvent.OnServerEvent:Connect(function(player: Player, action: string, arg1,
 		if bot then
 			stealBackFromBot(player, arg1, bot)
 		end
+	elseif action == "Whack" then
+		whackBot(player)
 	elseif action == "RequestState" then
 		pushState(player)
 		send(player, "Shop", shopPublic())
 		send(player, "Leaderboard", leaderboard())
 	end
 end)
-
--- ---------------------------------------------------------------------------
--- Join / leave
--- ---------------------------------------------------------------------------
 Players.PlayerAdded:Connect(function(player: Player)
 	newState(player)
-	-- First free plot is yours. If all 8 are taken, you spectate.
 	for _, plot in ipairs(plots) do
 		if not plot.owner then
 			plot.owner = player
@@ -695,9 +686,8 @@ Players.PlayerAdded:Connect(function(player: Player)
 	pushState(player)
 	send(player, "Shop", shopPublic())
 	send(player, "Leaderboard", leaderboard())
-	send(player, "Notice", "Welcome to BRAINROT BAY! Buy a brainrot from the conveyor, guard your plot!")
+	send(player, "Notice", "Welcome to LIGHTHOUSE BAY! Buy a brainrot from the conveyor, guard your plot!")
 end)
-
 Players.PlayerRemoving:Connect(function(player: Player)
 	local _, plot = plotOf(player)
 	if plot then
@@ -712,10 +702,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	end
 	state[player] = nil
 end)
-
--- Seed the shop so the first player sees brainrots waiting.
 for _ = 1, 3 do
 	spawnShopBrainrot()
 end
-
-print("BRAINROT BAY server ready: 8 plots, conveyor live, rivals prowling, lighthouse watching.")
+print("LIGHTHOUSE BAY server ready: 8 plots, conveyor live, rivals prowling, lighthouse watching.")
