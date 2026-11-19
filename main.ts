@@ -1,4 +1,4 @@
-// BRAINROT BAY -- entry program for make.fun roblox-brainrot-01.
+// LIGHTHOUSE BAY -- entry program for make.fun roblox-brainrot-01.
 //
 // What it does, in order:
 //   1. Reads the finished game out of this repository: the Rojo-built
@@ -52,7 +52,7 @@ function notDotted(path: string): boolean {
 // Fail loudly, before writing a dossier, if a required input is missing.
 function requireFile(path: string): void {
   if (!existsSync(path)) {
-    throw new Error(`BRAINROT BAY: missing required file: ${path}`);
+    throw new Error(`LIGHTHOUSE BAY: missing required file: ${path}`);
   }
 }
 
@@ -89,7 +89,7 @@ if (existsSync(join(repoRoot, 'screenshots'))) {
 function checkNames(dir: string): void {
   for (const entry of readdirSync(dir)) {
     if (!isSafeName(entry)) {
-      throw new Error(`BRAINROT BAY: unsafe name under /output: ${join(dir, entry)}`);
+      throw new Error(`LIGHTHOUSE BAY: unsafe name under /output: ${join(dir, entry)}`);
     }
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) checkNames(full);
@@ -115,7 +115,7 @@ writeFileSync(join(outputDir, 'dossier.json'), dossier);
 
 // --- run summary ------------------------------------------------------------
 
-console.log('BRAINROT BAY handed in:');
+console.log('LIGHTHOUSE BAY handed in:');
 console.log(`  place:       game.rbxl (${statSync(join(outputDir, 'game.rbxl')).size} bytes)`);
 console.log(`  source files: ${countFiles(join(outputDir, 'src'))} under src/`);
 console.log(`  screenshots:  ${countFiles(join(outputDir, 'screenshots'))} under screenshots/`);
